@@ -69,6 +69,7 @@ const state = {
   ballTracker: null,
   lastBallScanAt: 0,
   lastStandaloneScan: 0,
+  lastBallSeenAt: 0,
   standalonePrevLuma: null,
   trackerCanvas: document.createElement("canvas"),
   ballColor: null,
@@ -1512,7 +1513,7 @@ function laneBoundsAtStageY(y) {
   const calibrated = patternCorners.topLeft.y > 1
     && patternCorners.bottomLeft.y > patternCorners.topLeft.y;
   if (!calibrated) {
-    return { left: width * .08, right: width * .92, topY: height * .02, bottomY: height * .98 };
+    return { left: width * .08, right: width * .92, topY: height * .02, bottomY: height * .98, calibrated: false };
   }
   const topPercent = (patternCorners.topLeft.y + patternCorners.topRight.y) / 2;
   const bottomPercent = (patternCorners.bottomLeft.y + patternCorners.bottomRight.y) / 2;
@@ -1522,7 +1523,7 @@ function laneBoundsAtStageY(y) {
   const progress = (y - topY) / Math.max(1, bottomY - topY);
   const leftPercent = patternCorners.topLeft.x + (patternCorners.bottomLeft.x - patternCorners.topLeft.x) * progress;
   const rightPercent = patternCorners.topRight.x + (patternCorners.bottomRight.x - patternCorners.topRight.x) * progress;
-  return { left: width * leftPercent / 100, right: width * rightPercent / 100, topY, bottomY };
+  return { left: width * leftPercent / 100, right: width * rightPercent / 100, topY, bottomY, calibrated: true };
 }
 
 function isInsideLane(point, margin = 10) {
@@ -1565,7 +1566,9 @@ function stagePointToLaneData(point) {
   const horizontal = Math.max(0, Math.min(1, (point.x - bounds.left) / width));
   const board = 1 + (1 - horizontal) * 38;
   const laneProgress = Math.max(0, Math.min(1, (bounds.bottomY - point.y) / Math.max(1, bounds.bottomY - bounds.topY)));
-  return { board, feet: laneProgress * 60, progress: laneProgress };
+  // 보정된 레인은 60ft, 폴백(전체 화면)은 보통 52ft 가정
+  const laneFeetScale = bounds.calibrated ? 60 : 52;
+  return { board, feet: laneProgress * laneFeetScale, progress: laneProgress };
 }
 
 function analyzeShotTrajectory(points, speed) {
@@ -1623,13 +1626,28 @@ function analyzeShotTrajectory(points, speed) {
     const seconds = Math.max(.001, (to.time - from.time) / 1000);
     const meters = Math.abs(to.lane.feet - from.lane.feet) * .3048;
     const measured = meters / seconds * 3.6;
-    return measured >= 5 && measured <= 45 ? measured : 0;
+    return measured >= 3 && measured <= 50 ? measured : 0;
   };
-  const segmentSize = Math.max(2, Math.min(5, Math.floor(lanePoints.length / 4)));
-  const measuredStartSpeed = speedBetween(lanePoints[0], lanePoints[segmentSize]);
-  const measuredEndSpeed = speedBetween(lanePoints[lanePoints.length - 1 - segmentSize], lanePoints[lanePoints.length - 1]);
-  const startSpeed = measuredStartSpeed || speed || 0;
-  const endSpeed = measuredEndSpeed || (startSpeed ? startSpeed * .92 : 0);
+  // median 속도 (노이즈에 강함): 궤적을 여러 세그먼트로 나눠 각각 속도 계산 후 중앙값
+  const segmentSpeeds = [];
+  const segSize = Math.max(2, Math.min(5, Math.floor(lanePoints.length / 4)));
+  for (let i = 0; i + segSize < lanePoints.length; i += segSize) {
+    const s = speedBetween(lanePoints[i], lanePoints[i + segSize]);
+    if (s > 0) segmentSpeeds.push(s);
+  }
+  const median = values => {
+    if (!values.length) return 0;
+    const sorted = [...values].sort((a, b) => a - b);
+    return sorted[Math.floor(sorted.length / 2)];
+  };
+  const medianSpeed = median(segmentSpeeds);
+  const measuredStartSpeed = speedBetween(lanePoints[0], lanePoints[segmentSize]) || medianSpeed;
+  const measuredEndSpeed = speedBetween(lanePoints[lanePoints.length - 1 - segmentSize], lanePoints[lanePoints.length - 1]) || medianSpeed;
+  // 전체 평균 속도 폴백 (laneTravel / duration)
+  const totalDuration = (lanePoints[lanePoints.length - 1].time - lanePoints[0].time) / 1000;
+  const avgSpeed = totalDuration > 0 ? Math.abs(laneTravel * .3048) / totalDuration * 3.6 : 0;
+  const startSpeed = measuredStartSpeed || medianSpeed || (avgSpeed >= 3 && avgSpeed <= 50 ? avgSpeed : (speed || 0));
+  const endSpeed = measuredEndSpeed || medianSpeed || (startSpeed ? startSpeed * .92 : 0);
 
   const breakIndex = breakCandidate.index;
   const entryIndex = entryEnd.index;
@@ -2212,7 +2230,7 @@ function stageToTracker(point, trackerW, trackerH) {
 function trackBallStandalone(timestamp) {
   if (state.shot || !state.running || video.readyState < 2) return;
   const now = timestamp;
-  if (now - state.lastStandaloneScan < 40) return;
+  if (now - state.lastStandaloneScan < 33) return;
   state.lastStandaloneScan = now;
 
   const tracker = state.trackerCanvas;
@@ -2233,10 +2251,10 @@ function trackBallStandalone(timestamp) {
   const prev = state.standalonePrevLuma;
 
   const block = 6;
-  const minY = Math.round(th * .15);
-  const maxY = Math.round(th * .82);
-  const minX = Math.round(tw * .15);
-  const maxX = Math.round(tw * .85);
+  const minY = Math.round(th * .10);
+  const maxY = Math.round(th * .86);
+  const minX = Math.round(tw * .08);
+  const maxX = Math.round(tw * .92);
   let best = null;
 
   for (let y = minY; y < maxY; y += block) {
@@ -2272,18 +2290,30 @@ function trackBallStandalone(timestamp) {
 
   state.standalonePrevLuma = luma;
 
-  if (!best || best.score < 30 || best.moving < 2) return;
+  if (!best || best.score < 18 || best.moving < 1) return;
 
   const stagePoint = sourceToStage(best.x, best.y, tw, th);
-  if (!isInsideLane(stagePoint, stage.clientWidth * .08)) return;
+  if (!isInsideLane(stagePoint, stage.clientWidth * .04)) return;
 
   const last = state.trajectory[state.trajectory.length - 1];
-  if (last && Math.hypot(stagePoint.x - last.x, stagePoint.y - last.y) < 4) {
+  const dist = last ? Math.hypot(stagePoint.x - last.x, stagePoint.y - last.y) : Infinity;
+  if (last && dist < 8) {
     // 같은 자리 — 업데이트만
     state.trajectory[state.trajectory.length - 1] = { ...stagePoint, time: timestamp };
-  } else {
+  } else if (last && dist <= 60) {
+    // 정상 이동 — push (점프 아님)
     state.trajectory.push({ ...stagePoint, time: timestamp });
     state.trajectory = state.trajectory.slice(-90);
+  } else if (!last || dist > 60) {
+    // 큰 점프 (빠른 공) — velocity 예측으로 연결 시도, 안 되면 새 궤적 시작
+    if (state.trajectory.length >= 4) {
+      // 기존 궤적 유지하며 새 점 추가 (빠른 공일 수 있음)
+      state.trajectory.push({ ...stagePoint, time: timestamp });
+      state.trajectory = state.trajectory.slice(-90);
+    } else {
+      // 궤적이 짧으면 새로 시작
+      state.trajectory = [{ ...stagePoint, time: timestamp }];
+    }
   }
 
   // 궤적이 일정 길이 넘으면 ballTracker 감지 상태로 전환 (drawPose가 그리도록)
@@ -2292,6 +2322,7 @@ function trackBallStandalone(timestamp) {
   }
   state.ballTracker.detected = true;
   state.ballTracker.currentStage = stagePoint;
+  state.lastBallSeenAt = timestamp;
 }
 
 function detectBall(timestamp, wristPoint, posePoints) {
@@ -3515,7 +3546,7 @@ try {
   window.showBootError && window.showBootError("초기화 에러: " + initError.message, "app-init");
 }
 if ("serviceWorker" in navigator && location.protocol.startsWith("http")) {
-  navigator.serviceWorker.register("./sw.js?v=39").then(reg => {
+  navigator.serviceWorker.register("./sw.js?v=40").then(reg => {
     if (reg.waiting) reg.waiting.postMessage("SKIP_WAITING");
     reg.addEventListener("updatefound", () => {
       const newWorker = reg.installing;
