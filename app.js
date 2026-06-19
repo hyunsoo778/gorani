@@ -1,3 +1,40 @@
+// ── LANE LAB 부트스트랩 (외부 파일 의존 없이 자체 처리) ──
+(function bootStrap() {
+  function showBootError(message, where) {
+    if (document.getElementById("bootError")) return;
+    var banner = document.createElement("div");
+    banner.id = "bootError";
+    banner.style.cssText = "position:fixed;top:0;left:0;right:0;z-index:99999;padding:10px 12px;background:#c0392b;color:#fff;font:600 12px/1.5 system-ui,sans-serif;white-space:pre-wrap;word-break:break-all;box-shadow:0 2px 8px rgba(0,0,0,.4)";
+    banner.textContent = "⚠ LANE LAB 로딩 에러\n" + message + (where ? "\n(" + where + ")" : "");
+    document.body.appendChild(banner);
+    removeBootLoading();
+  }
+  window.showBootError = showBootError;
+  function removeBootLoading() {
+    var el = document.getElementById("bootLoading");
+    if (el) el.remove();
+  }
+  window.addEventListener("error", function (e) {
+    // 크로스 오리진 "Script error."는 무시 (외부 CDN 사소한 경고)
+    if (e.message === "Script error." && !e.filename) return;
+    showBootError((e.error && e.error.message) || e.message || "알 수 없는 에러",
+      e.filename ? e.filename.split("/").pop() + ":" + (e.lineno || "?") : "");
+  });
+  window.addEventListener("unhandledrejection", function (e) {
+    var msg = e.reason && (e.reason.message || String(e.reason));
+    showBootError(msg || "처리되지 않은 Promise 에러", "promise");
+  });
+  // 로딩 즉시 제거 (DOM 준비 상관없이) + 안전 타임아웃
+  removeBootLoading();
+  setTimeout(removeBootLoading, 1500);
+  // 기존 Service Worker 갱신
+  if ("serviceWorker" in navigator) {
+    navigator.serviceWorker.getRegistrations().then(function (regs) {
+      regs.forEach(function (r) { r.update(); });
+    }).catch(function () {});
+  }
+})();
+
 const $ = (selector, root = document) => root.querySelector(selector);
 const $$ = (selector, root = document) => [...root.querySelectorAll(selector)];
 // 요소가 없으면(레인 페이지 삭제 등) 스킵하는 안전 이벤트 등록
@@ -5,6 +42,9 @@ const on = (selector, type, handler, root = document) => {
   const el = $(selector, root);
   if (el) el.addEventListener(type, handler);
 };
+// 로딩 오버레이 즉시 제거 (이중 안전장치)
+const __bootLoading = document.getElementById("bootLoading");
+if (__bootLoading) __bootLoading.remove();
 
 const state = {
   stream: null,
@@ -26,8 +66,9 @@ const state = {
   videoAnalysisCompleted: false,
   ballTracker: null,
   lastBallScanAt: 0,
+  lastStandaloneScan: 0,
+  standalonePrevLuma: null,
   trackerCanvas: document.createElement("canvas"),
-  ballLockArmed: false,
   ballColor: null,
   autoBallLock: null,
   captureMode: localStorage.getItem("lane-lab-capture-mode") || "phone",
@@ -1140,44 +1181,6 @@ function finishPatternDrag(event) {
 lanePatternOverlay.addEventListener("pointerup", finishPatternDrag);
 lanePatternOverlay.addEventListener("pointercancel", finishPatternDrag);
 
-$("#ballLockToggle").addEventListener("click", () => {
-  state.ballLockArmed = !state.ballLockArmed;
-  stage.classList.toggle("ball-locking", state.ballLockArmed);
-  $("#ballLockToggle").classList.toggle("armed", state.ballLockArmed);
-  $("#ballLockToggle").textContent = state.ballLockArmed ? "공을 눌러주세요" : (state.ballColor ? "공 지정됨" : "공 지정(선택)");
-});
-
-stage.addEventListener("click", event => {
-  if (!state.ballLockArmed || video.readyState < 2) return;
-  if (event.target.closest("button, .camera-pattern-controls")) return;
-  const rect = stage.getBoundingClientRect();
-  const stagePoint = { x: event.clientX - rect.left, y: event.clientY - rect.top };
-  const tracker = state.trackerCanvas;
-  const tw = 216;
-  const th = Math.round(tw * (video.videoHeight || 1920) / (video.videoWidth || 1080));
-  tracker.width = tw;
-  tracker.height = th;
-  const tctx = tracker.getContext("2d", { willReadFrequently: true });
-  tctx.drawImage(video, 0, 0, tw, th);
-  const point = stageToTracker(stagePoint, tw, th);
-  const sampleX = Math.max(2, Math.min(tw - 3, Math.round(point.x)));
-  const sampleY = Math.max(2, Math.min(th - 3, Math.round(point.y)));
-  const sample = tctx.getImageData(sampleX - 2, sampleY - 2, 5, 5).data;
-  let r = 0, g = 0, b = 0, count = 0;
-  for (let index = 0; index < sample.length; index += 4) {
-    r += sample[index];
-    g += sample[index + 1];
-    b += sample[index + 2];
-    count++;
-  }
-  state.ballColor = { r: r / count, g: g / count, b: b / count };
-  state.ballLockArmed = false;
-  stage.classList.remove("ball-locking");
-  $("#ballLockToggle").classList.remove("armed");
-  $("#ballLockToggle").textContent = "공 지정됨";
-  showToast("공 색상을 기억했습니다. 이제 투구해주세요.");
-});
-
 function setPage(id) {
   $$(".page").forEach(page => page.classList.toggle("active", page.id === id));
   $$(".bottom-nav button").forEach(button => button.classList.toggle("active", button.dataset.target === id));
@@ -1324,6 +1327,13 @@ function angleAt(a, b, c) {
 function drawPose(landmarks) {
   const w = stage.clientWidth;
   const h = stage.clientHeight;
+  // landmarks가 null이면(포즈 미감지) 궤적만 그린다
+  if (!landmarks) {
+    ctx.clearRect(0, 0, w, h);
+    drawGuide(0, true);
+    drawTrajectoryOnly(ctx, w, h);
+    return [];
+  }
   const rawPoints = landmarks.map(mapLandmark);
   state.poseHistory.push(rawPoints);
   state.poseHistory = state.poseHistory.slice(-3);
@@ -1789,6 +1799,56 @@ function drawShotRadarCard(values) {
   });
 }
 
+// 포즈 미감지 상태에서 궤적만 그리는 함수 (trackBallStandalone과 함께 사용)
+function drawTrajectoryOnly(targetCtx, w, h) {
+  if (state.trajectory.length < 2) return;
+  const line = smoothTrajectory(state.trajectory);
+  const travel = Math.hypot(line[line.length - 1].x - line[0].x, line[line.length - 1].y - line[0].y);
+  if (travel < 8 && state.trajectory.length < 4) {
+    // 짧은 경우 공 마커만
+    const ball = state.ballTracker?.currentStage || line[line.length - 1];
+    targetCtx.strokeStyle = "rgba(255,255,255,.9)";
+    targetCtx.fillStyle = "#35d6c8";
+    targetCtx.lineWidth = 2;
+    targetCtx.shadowColor = "#35d6c8";
+    targetCtx.shadowBlur = 10;
+    targetCtx.beginPath();
+    targetCtx.arc(ball.x, ball.y, 8, 0, Math.PI * 2);
+    targetCtx.fill();
+    targetCtx.stroke();
+    targetCtx.shadowBlur = 0;
+    return;
+  }
+  const motion = analyzeShotTrajectory(state.trajectory);
+  if (motion.valid) {
+    drawSegmentedTrajectory(targetCtx, line, motion.breakIndex, motion.entryIndex, {
+      lineWidth: 2.4,
+      glow: true,
+      endBall: true
+    });
+  } else {
+    // 궤적이 짧거나 미확정이면 라임 점선
+    targetCtx.strokeStyle = "rgba(201,255,61,.6)";
+    targetCtx.lineWidth = 2;
+    targetCtx.setLineDash([5, 5]);
+    targetCtx.beginPath();
+    line.forEach((point, index) => index ? targetCtx.lineTo(point.x, point.y) : targetCtx.moveTo(point.x, point.y));
+    targetCtx.stroke();
+    targetCtx.setLineDash([]);
+    const ball = state.ballTracker?.currentStage || line[line.length - 1];
+    targetCtx.strokeStyle = "rgba(255,255,255,.9)";
+    targetCtx.fillStyle = "#35d6c8";
+    targetCtx.lineWidth = 2;
+    targetCtx.shadowColor = "#35d6c8";
+    targetCtx.shadowBlur = 10;
+    targetCtx.beginPath();
+    targetCtx.arc(ball.x, ball.y, 8, 0, Math.PI * 2);
+    targetCtx.fill();
+    targetCtx.stroke();
+    targetCtx.shadowBlur = 0;
+  }
+}
+
 const TRAJECTORY_SEGMENT_COLORS = ["#c9ff3d", "#50d9cd", "#ff7043"];
 
 function computeConsistency(shots) {
@@ -2117,7 +2177,7 @@ function learnBallNearWrist(timestamp, wristPoint) {
       b: stable ? previous.color.b * .7 + best.b * .3 : best.b
     }
   };
-  if (!state.ballColor && stableFrames >= 3) {
+  if (!state.ballColor && stableFrames >= 2) {
     $("#modelStatus").innerHTML = "LIVE · <b>BALL READY</b>";
   }
 }
@@ -2145,6 +2205,93 @@ function stageToTracker(point, trackerW, trackerH) {
   return { x: sourceX / sourceW * trackerW, y: sourceY / sourceH * trackerH };
 }
 
+// 포즈 감지와 무관하게 공만 보여도 궤적을 추적하는 독립 함수
+// 샷(손목 동작)이 감지되지 않아도 공 움직임이 뚜렷하면 trajectory를 채운다
+function trackBallStandalone(timestamp) {
+  if (state.shot || !state.running || video.readyState < 2) return;
+  const now = timestamp;
+  if (now - state.lastStandaloneScan < 40) return;
+  state.lastStandaloneScan = now;
+
+  const tracker = state.trackerCanvas;
+  const tw = 216;
+  const th = Math.round(tw * (video.videoHeight || 1920) / (video.videoWidth || 1080));
+  tracker.width = tw;
+  tracker.height = th;
+  const tctx = tracker.getContext("2d", { willReadFrequently: true });
+  tctx.drawImage(video, 0, 0, tw, th);
+  const image = tctx.getImageData(0, 0, tw, th);
+  const luma = new Uint8Array(tw * th);
+  let bgSum = 0;
+  for (let index = 0, pixel = 0; index < image.data.length; index += 4, pixel++) {
+    luma[pixel] = Math.round(image.data[index] * .2126 + image.data[index + 1] * .7152 + image.data[index + 2] * .0722);
+    bgSum += luma[pixel];
+  }
+  const backgroundLuma = bgSum / (tw * th);
+  const prev = state.standalonePrevLuma;
+
+  const block = 6;
+  const minY = Math.round(th * .15);
+  const maxY = Math.round(th * .82);
+  const minX = Math.round(tw * .15);
+  const maxX = Math.round(tw * .85);
+  let best = null;
+
+  for (let y = minY; y < maxY; y += block) {
+    for (let x = minX; x < maxX; x += block) {
+      let moving = 0;
+      let dark = 0;
+      let total = 0;
+      let rSum = 0, gSum = 0, bSum = 0, lSum = 0;
+      for (let by = 0; by < block && y + by < th; by += 2) {
+        for (let bx = 0; bx < block && x + bx < tw; bx += 2) {
+          const pixelIndex = (y + by) * tw + x + bx;
+          const idx = pixelIndex * 4;
+          rSum += image.data[idx];
+          gSum += image.data[idx + 1];
+          bSum += image.data[idx + 2];
+          const lum = luma[pixelIndex];
+          lSum += lum;
+          if (lum < 120) dark++;
+          if (prev && Math.abs(lum - prev[pixelIndex]) > 14) moving++;
+          total++;
+        }
+      }
+      const blockLuma = lSum / total;
+      const saturation = Math.max(rSum, gSum, bSum) / total - Math.min(rSum, gSum, bSum) / total;
+      const contrast = Math.abs(blockLuma - backgroundLuma);
+      const isBallish = dark >= total * .12 || saturation > 45 || contrast > 35;
+      if (!isBallish) continue;
+      // 움직임이 명확하거나 색상/대비가 강한 후보
+      const score = moving * 5 + dark * 3 + saturation * .4 + contrast * .5;
+      if (!best || score > best.score) best = { x: x + block / 2, y: y + block / 2, score, moving, r: rSum / total, g: gSum / total, b: bSum / total };
+    }
+  }
+
+  state.standalonePrevLuma = luma;
+
+  if (!best || best.score < 30 || best.moving < 2) return;
+
+  const stagePoint = sourceToStage(best.x, best.y, tw, th);
+  if (!isInsideLane(stagePoint, stage.clientWidth * .08)) return;
+
+  const last = state.trajectory[state.trajectory.length - 1];
+  if (last && Math.hypot(stagePoint.x - last.x, stagePoint.y - last.y) < 4) {
+    // 같은 자리 — 업데이트만
+    state.trajectory[state.trajectory.length - 1] = { ...stagePoint, time: timestamp };
+  } else {
+    state.trajectory.push({ ...stagePoint, time: timestamp });
+    state.trajectory = state.trajectory.slice(-90);
+  }
+
+  // 궤적이 일정 길이 넘으면 ballTracker 감지 상태로 전환 (drawPose가 그리도록)
+  if (!state.ballTracker) {
+    state.ballTracker = { detected: false, confirmed: false, valid: false };
+  }
+  state.ballTracker.detected = true;
+  state.ballTracker.currentStage = stagePoint;
+}
+
 function detectBall(timestamp, wristPoint, posePoints) {
   if (!state.shot || !state.ballTracker || video.readyState < 2) return;
   const profile = trackingProfile();
@@ -2160,9 +2307,12 @@ function detectBall(timestamp, wristPoint, posePoints) {
   tctx.drawImage(video, 0, 0, tw, th);
   const image = tctx.getImageData(0, 0, tw, th);
   const luma = new Uint8Array(tw * th);
+  let bgLumaSum = 0;
   for (let index = 0, pixel = 0; index < image.data.length; index += 4, pixel++) {
     luma[pixel] = Math.round(image.data[index] * .2126 + image.data[index + 1] * .7152 + image.data[index + 2] * .0722);
+    bgLumaSum += luma[pixel];
   }
+  const backgroundLuma = bgLumaSum / (tw * th);
 
   const previous = state.ballTracker.previous;
   const previousLuma = state.ballTracker.previousLuma;
@@ -2187,6 +2337,7 @@ function detectBall(timestamp, wristPoint, posePoints) {
       let redTotal = 0;
       let greenTotal = 0;
       let blueTotal = 0;
+      let lumaTotal = 0;
       for (let by = 0; by < block && y + by < th; by += 2) {
         for (let bx = 0; bx < block && x + bx < tw; bx += 2) {
           const pixelIndex = (y + by) * tw + x + bx;
@@ -2198,14 +2349,21 @@ function detectBall(timestamp, wristPoint, posePoints) {
           greenTotal += g;
           blueTotal += b;
           const luminance = luma[pixelIndex];
-          if (luminance < 108) dark++;
-          if (previousLuma && Math.abs(luminance - previousLuma[pixelIndex]) > 16) moving++;
+          lumaTotal += luminance;
+          if (luminance < 120) dark++;
+          if (previousLuma && Math.abs(luminance - previousLuma[pixelIndex]) > 14) moving++;
           total++;
         }
       }
-      if (!trackingColor && dark < Math.max(2, total * .24)) continue;
-      if (previousLuma && moving < Math.max(1, total * (state.ballTracker.released ? .10 : .15))) continue;
+      const blockLuma = lumaTotal / total;
       const averageColor = { r: redTotal / total, g: greenTotal / total, b: blueTotal / total };
+      const blockSaturation = Math.max(averageColor.r, averageColor.g, averageColor.b) - Math.min(averageColor.r, averageColor.g, averageColor.b);
+      const contrast = Math.abs(blockLuma - backgroundLuma);
+      // 게이트 완화: 어두운 공 OR 컬러 공 OR 배경과 대비되는 객체
+      const isBallish = dark >= total * .12 || blockSaturation > 45 || contrast > 35;
+      if (!trackingColor && !isBallish) continue;
+      // 움직임: 색상/대비로 명확한 객체면 움직임 없어도 후보 허용 (정지 공 잡기)
+      if (previousLuma && moving < Math.max(1, total * (state.ballTracker.released ? .10 : .15)) && !isBallish) continue;
       const colorDistance = trackingColor
         ? Math.hypot(
             averageColor.r - trackingColor.r,
@@ -2213,8 +2371,8 @@ function detectBall(timestamp, wristPoint, posePoints) {
             averageColor.b - trackingColor.b
           )
         : 0;
-      if (trackingColor && !state.ballTracker.released && colorDistance > 145) continue;
-      if (trackingColor && state.ballTracker.released && colorDistance > 190) continue;
+      if (trackingColor && !state.ballTracker.released && colorDistance > 160) continue;
+      if (trackingColor && state.ballTracker.released && colorDistance > 200) continue;
       const cx = x + block / 2;
       const cy = y + block / 2;
       const wristDistance = Math.hypot(cx - wristSource.x, cy - wristSource.y);
@@ -2243,8 +2401,14 @@ function detectBall(timestamp, wristPoint, posePoints) {
         score += Math.max(0, 45 - distance);
         score += Math.max(0, previous.y - cy) * .8;
       } else {
-        if (wristDistance > tw * .18 || cy < wristSource.y - th * .07) continue;
-        score += Math.max(0, tw * .20 - wristDistance) * 2;
+        const wristValid = wristPoint && wristPoint.visibility > .3;
+        if (wristValid) {
+          if (wristDistance > tw * .32 || cy < wristSource.y - th * .12) continue;
+          score += Math.max(0, tw * .30 - wristDistance) * 2;
+        } else {
+          // 손목 감지 실패 시 레인 중앙 하단 전체 폴백 검색
+          score += Math.max(0, blockSaturation) * .3 + Math.max(0, contrast) * .4;
+        }
       }
       if (!best || score > best.score) best = { x: cx, y: cy, score };
     }
@@ -2422,7 +2586,7 @@ function updatePoseSummary(summary, data) {
 
 function beginShot(timestamp) {
   if (timestamp - state.lastShotFinishedAt < 3500) return;
-  const autoSeed = state.autoBallLock?.stableFrames >= 3 && timestamp - state.autoBallLock.time < 700
+  const autoSeed = state.autoBallLock?.stableFrames >= 2 && timestamp - state.autoBallLock.time < 1000
     ? state.autoBallLock
     : null;
   state.shot = createPoseSummary(timestamp);
@@ -2649,6 +2813,8 @@ async function liveLoop(timestamp = performance.now()) {
     return;
   }
   state.frame++;
+  // 포즈와 무관하게 공 추적 (샷 미감지 시에도 공이 지나가면 궤적 기록)
+  trackBallStandalone(timestamp);
   if (!state.poseBusy && video.readyState >= 2 && video.currentTime !== state.lastVideoTime) {
     state.poseBusy = true;
     state.lastVideoTime = video.currentTime;
@@ -2663,17 +2829,21 @@ async function liveLoop(timestamp = performance.now()) {
             $("#modelStatus").innerHTML = "LIVE · <b>BALL TRACKING</b>";
           } else if (state.ballTracker?.detected) {
             $("#modelStatus").innerHTML = "LIVE · <b>BALL LOCKED</b>";
-          } else if (state.autoBallLock?.stableFrames >= 3) {
+          } else if (state.autoBallLock?.stableFrames >= 2) {
             $("#modelStatus").innerHTML = "LIVE · <b>BALL READY</b>";
           } else {
             $("#modelStatus").innerHTML = "LIVE · <b>POSE</b>";
           }
         } else {
           drawGuide(0, true);
-          $("#modelStatus").textContent = "전신을 화면에 맞춰주세요";
+          // 포즈는 없어도 공이 추적 중이면 궤적을 그린다
+          if (state.trajectory.length >= 2) drawPose(null);
+          $("#modelStatus").textContent = state.trajectory.length >= 2 ? "공 추적 중" : "전신을 화면에 맞춰주세요";
         }
       } else {
         drawGuide(0, true);
+        // 모델 미준비 상태에서도 공 추적은 동작
+        if (state.trajectory.length >= 2) drawPose(null);
       }
     } catch (error) {
       console.warn("Pose frame failed", error);
@@ -3343,7 +3513,7 @@ try {
   window.showBootError && window.showBootError("초기화 에러: " + initError.message, "app-init");
 }
 if ("serviceWorker" in navigator && location.protocol.startsWith("http")) {
-  navigator.serviceWorker.register("./sw.js?v=35").then(reg => {
+  navigator.serviceWorker.register("./sw.js?v=38").then(reg => {
     if (reg.waiting) reg.waiting.postMessage("SKIP_WAITING");
     reg.addEventListener("updatefound", () => {
       const newWorker = reg.installing;

@@ -1,10 +1,9 @@
-const CACHE = "lane-lab-v35";
+const CACHE = "lane-lab-v38";
 const ASSETS = [
   "./",
   "./index.html",
   "./styles.css",
   "./app.js",
-  "./bootstrap.js",
   "./pose-engine.js",
   "./manifest.webmanifest",
   "./icons/icon-192.png",
