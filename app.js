@@ -52,6 +52,8 @@ const state = {
   stream: null,
   facingMode: "environment",
   running: false,
+  laneConfirmed: false,
+  laneConfirmPhase: false,
   sound: false,
   frame: 0,
   animationId: null,
@@ -1819,6 +1821,40 @@ function drawShotRadarCard(values) {
   });
 }
 
+// 레인 확인 단계에서 patternCorners 사각형을 점선으로 그리는 미리보기
+function drawLanePreview(targetCtx, w, h) {
+  targetCtx.clearRect(0, 0, w, h);
+  const tl = { x: patternCorners.topLeft.x / 100 * w, y: patternCorners.topLeft.y / 100 * h };
+  const tr = { x: patternCorners.topRight.x / 100 * w, y: patternCorners.topRight.y / 100 * h };
+  const bl = { x: patternCorners.bottomLeft.x / 100 * w, y: patternCorners.bottomLeft.y / 100 * h };
+  const br = { x: patternCorners.bottomRight.x / 100 * w, y: patternCorners.bottomRight.y / 100 * h };
+  targetCtx.save();
+  targetCtx.strokeStyle = "#c9ff3d";
+  targetCtx.lineWidth = 2.5;
+  targetCtx.setLineDash([8, 6]);
+  targetCtx.shadowColor = "rgba(201,255,61,.6)";
+  targetCtx.shadowBlur = 8;
+  targetCtx.beginPath();
+  targetCtx.moveTo(tl.x, tl.y);
+  targetCtx.lineTo(tr.x, tr.y);
+  targetCtx.lineTo(br.x, br.y);
+  targetCtx.lineTo(bl.x, bl.y);
+  targetCtx.closePath();
+  targetCtx.stroke();
+  targetCtx.setLineDash([]);
+  // 모서리 점
+  [tl, tr, bl, br].forEach(p => {
+    targetCtx.fillStyle = "#07110f";
+    targetCtx.strokeStyle = "#c9ff3d";
+    targetCtx.lineWidth = 2;
+    targetCtx.beginPath();
+    targetCtx.arc(p.x, p.y, 5, 0, Math.PI * 2);
+    targetCtx.fill();
+    targetCtx.stroke();
+  });
+  targetCtx.restore();
+}
+
 // 포즈 미감지 상태에서 궤적만 그리는 함수 (trackBallStandalone과 함께 사용)
 function drawTrajectoryOnly(targetCtx, w, h) {
   if (state.trajectory.length < 2) return;
@@ -1870,6 +1906,18 @@ function drawTrajectoryOnly(targetCtx, w, h) {
 }
 
 const TRAJECTORY_SEGMENT_COLORS = ["#c9ff3d", "#50d9cd", "#ff7043"];
+
+// hex 색상을 주어진 양만큼 밝게 (#rrggbb → #rrggbb)
+function lightenColor(hex, amount) {
+  const num = parseInt(hex.slice(1), 16);
+  let r = (num >> 16) + amount;
+  let g = ((num >> 8) & 0xff) + amount;
+  let b = (num & 0xff) + amount;
+  r = Math.max(0, Math.min(255, r));
+  g = Math.max(0, Math.min(255, g));
+  b = Math.max(0, Math.min(255, b));
+  return "#" + ((r << 16) | (g << 8) | b).toString(16).padStart(6, "0");
+}
 
 function computeConsistency(shots) {
   const recent = shots.filter(shot => shot && Number.isFinite(shot.score)).slice(0, 10);
@@ -2020,7 +2068,13 @@ function drawSegmentedTrajectory(targetCtx, points, breakIndex, entryIndex, opti
   segmentRanges.forEach(([start, end], index) => {
     if (end <= start) return;
     const color = TRAJECTORY_SEGMENT_COLORS[index];
-    targetCtx.strokeStyle = color;
+    const sp = points[start];
+    const ep = points[end];
+    // 구간 내 그라데이션 (시작→끝으로 약간 밝아짐, 진행 방향 암시)
+    const grad = targetCtx.createLinearGradient(sp.x, sp.y, ep.x, ep.y);
+    grad.addColorStop(0, color);
+    grad.addColorStop(1, lightenColor(color, 18));
+    targetCtx.strokeStyle = grad;
     targetCtx.lineWidth = lineWidth;
     targetCtx.setLineDash(dashPattern);
     if (glow) targetCtx.shadowColor = color;
@@ -2033,6 +2087,37 @@ function drawSegmentedTrajectory(targetCtx, points, breakIndex, entryIndex, opti
   });
 
   targetCtx.setLineDash([]);
+
+  // 화살표: 마지막 두 점 방향으로 궤적 끝에 삼각형 (진행 방향 표시)
+  if (count >= 2) {
+    const tip = points[count - 1];
+    const prev = points[count - 2];
+    const dx = tip.x - prev.x;
+    const dy = tip.y - prev.y;
+    const len = Math.hypot(dx, dy);
+    if (len > 6) {
+      const ux = dx / len;
+      const uy = dy / len;
+      const arrowSize = lineWidth * 2.6;
+      const arrowColor = lightenColor(TRAJECTORY_SEGMENT_COLORS[2], 10);
+      const baseX = tip.x - ux * arrowSize;
+      const baseY = tip.y - uy * arrowSize;
+      const perpX = -uy * arrowSize * .55;
+      const perpY = ux * arrowSize * .55;
+      targetCtx.fillStyle = arrowColor;
+      targetCtx.strokeStyle = "rgba(255,255,255,.85)";
+      targetCtx.lineWidth = 1.5;
+      targetCtx.shadowColor = arrowColor;
+      targetCtx.shadowBlur = 10;
+      targetCtx.beginPath();
+      targetCtx.moveTo(tip.x, tip.y);
+      targetCtx.lineTo(baseX + perpX, baseY + perpY);
+      targetCtx.lineTo(baseX - perpX, baseY - perpY);
+      targetCtx.closePath();
+      targetCtx.fill();
+      targetCtx.stroke();
+    }
+  }
 
   if (markers) {
     const markerPoints = [breakAt, entryAt];
@@ -2228,6 +2313,7 @@ function stageToTracker(point, trackerW, trackerH) {
 // 포즈 감지와 무관하게 공만 보여도 궤적을 추적하는 독립 함수
 // 샷(손목 동작)이 감지되지 않아도 공 움직임이 뚜렷하면 trajectory를 채운다
 function trackBallStandalone(timestamp) {
+  if (!state.laneConfirmed) return;
   if (state.shot || !state.running || video.readyState < 2) return;
   const now = timestamp;
   if (now - state.lastStandaloneScan < 33) return;
@@ -2326,6 +2412,7 @@ function trackBallStandalone(timestamp) {
 }
 
 function detectBall(timestamp, wristPoint, posePoints) {
+  if (!state.laneConfirmed) return;
   if (!state.shot || !state.ballTracker || video.readyState < 2) return;
   const profile = trackingProfile();
   if (timestamp - state.ballTracker.startedAt < (state.ballTracker.seeded ? profile.initialDelay : 220)) return;
@@ -2846,6 +2933,13 @@ async function liveLoop(timestamp = performance.now()) {
     return;
   }
   state.frame++;
+  // 레인 확인 단계: 점선 사각형 미리보기 + 주기적 재감지 (공 추적 안 함)
+  if (state.laneConfirmPhase) {
+    if (state.frame % 15 === 0) runLaneDetection();
+    drawLanePreview(ctx, stage.clientWidth, stage.clientHeight);
+    state.animationId = requestAnimationFrame(liveLoop);
+    return;
+  }
   // 포즈와 무관하게 공 추적 (샷 미감지 시에도 공이 지나가면 궤적 기록)
   trackBallStandalone(timestamp);
   if (!state.poseBusy && video.readyState >= 2 && video.currentTime !== state.lastVideoTime) {
@@ -2908,6 +3002,8 @@ async function startCamera() {
     await video.play();
     state.running = true;
     state.fileVideo = false;
+    state.laneConfirmed = false;
+    state.laneConfirmPhase = true;
     state.prevWrist = null;
     state.shot = null;
     state.trajectory = [];
@@ -2922,11 +3018,11 @@ async function startCamera() {
     video.classList.add("visible");
     placeholder.classList.add("hidden");
     stage.classList.add("analyzing");
-    $(".live-badge").innerHTML = "<span></span> 분석 중";
-    setFlow("camera");
+    $(".live-badge").innerHTML = "<span></span> 레인 확인 중";
+    enterLaneConfirmPhase();
     cancelAnimationFrame(state.animationId);
     liveLoop();
-    showToast("카메라 분석을 시작했어요.");
+    showToast("카메라를 켰어요. 먼저 투구할 레인을 확인해주세요.");
   } catch (error) {
     showToast(error.name === "NotAllowedError" ? "카메라 권한을 허용해주세요." : "카메라를 시작할 수 없어요.");
   }
@@ -2936,6 +3032,8 @@ function stopCamera() {
   state.stream?.getTracks().forEach(track => track.stop());
   state.stream = null;
   state.running = false;
+  state.laneConfirmed = false;
+  state.laneConfirmPhase = false;
   state.shot = null;
   state.prevWrist = null;
   state.trajectory = [];
@@ -2944,6 +3042,7 @@ function stopCamera() {
   state.smoothedPose = null;
   state.poseHistory = [];
   state.autoBallLock = null;
+  exitLaneConfirmPhase();
   cancelAnimationFrame(state.animationId);
   cameraButton.classList.remove("active");
   stage.classList.remove("analyzing");
@@ -2966,6 +3065,50 @@ function stopCamera() {
 }
 
 cameraButton.addEventListener("click", () => state.running ? stopCamera() : startCamera());
+
+// ── 레인 확인 단계 ──
+function enterLaneConfirmPhase() {
+  state.laneConfirmPhase = true;
+  state.laneConfirmed = false;
+  const overlay = $("#laneConfirmOverlay");
+  if (overlay) overlay.hidden = false;
+  setFlow("camera");
+  // 즉시 1회 감지 시도
+  setTimeout(() => runLaneDetection(), 200);
+}
+
+function exitLaneConfirmPhase() {
+  state.laneConfirmPhase = false;
+  const overlay = $("#laneConfirmOverlay");
+  if (overlay) overlay.hidden = true;
+}
+
+function runLaneDetection() {
+  if (!state.running || !state.laneConfirmPhase) return;
+  const result = detectLaneByMarkers();
+  const statusEl = $("#laneConfirmStatus");
+  if (result) {
+    patternCorners = result.corners;
+    updateOverlayControls?.();
+    if (statusEl) statusEl.textContent = "점선 사각형이 레인 위에 있나요? 맞으면 확정해주세요.";
+  } else {
+    if (statusEl) statusEl.textContent = "레인을 잘 못 찾았어요. 카메라를 레인이 잘 보이게 조금 옮겨주세요.";
+  }
+}
+
+on("#reDetectLane", "click", () => {
+  runLaneDetection();
+  showToast("레인을 다시 감지했어요.");
+});
+
+on("#confirmLane", "click", () => {
+  state.laneConfirmed = true;
+  state.laneConfirmPhase = false;
+  exitLaneConfirmPhase();
+  $(".live-badge").innerHTML = "<span></span> 분석 중";
+  $("#modelStatus").textContent = "레인 확정 · 투구해주세요";
+  showToast("레인을 확정했어요. 이제 투구해주세요!");
+});
 
 $("#flipButton").addEventListener("click", async () => {
   state.facingMode = state.facingMode === "environment" ? "user" : "environment";
@@ -3546,7 +3689,7 @@ try {
   window.showBootError && window.showBootError("초기화 에러: " + initError.message, "app-init");
 }
 if ("serviceWorker" in navigator && location.protocol.startsWith("http")) {
-  navigator.serviceWorker.register("./sw.js?v=40").then(reg => {
+  navigator.serviceWorker.register("./sw.js?v=41").then(reg => {
     if (reg.waiting) reg.waiting.postMessage("SKIP_WAITING");
     reg.addEventListener("updatefound", () => {
       const newWorker = reg.installing;
