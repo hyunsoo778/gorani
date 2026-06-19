@@ -347,22 +347,9 @@
       </ol>
     </section>
   </div>
-  <script>
-    // Service Worker 구버전 캐시 강제 제거 (초기화 실패 방지)
-    if ("serviceWorker" in navigator) {
-      navigator.serviceWorker.getRegistrations().then(regs => {
-        regs.forEach(r => r.update());
-      }).catch(() => {});
-    }
-    // 전역 에러 캐처 — 화면에 즉시 표시
-    window.addEventListener("error", event => {
-      const banner = document.createElement("div");
-      banner.style.cssText = "position:fixed;top:0;left:0;right:0;z-index:99999;padding:12px;background:#b00;color:#fff;font:12px monospace;white-space:pre-wrap;word-break:break-all";
-      banner.textContent = "JS 에러: " + (event.message || "알 수 없음") + (event.filename ? "\n" + event.filename.split("/").pop() + ":" + event.lineno : "");
-      document.body.appendChild(banner);
-    });
-  </script>
+  <div id="bootLoading" style="position:fixed;inset:0;display:flex;align-items:center;justify-content:center;background:#07110f;color:#c9ff3d;font:600 14px system-ui;z-index:99998">LANE LAB 로딩 중…</div>
   <script type="module" src="./pose-engine.js?v=34"></script>
+  <script src="./bootstrap.js?v=34"></script>
   <script src="./app.js?v=34"></script>
 </body>
 </html>
