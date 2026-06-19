@@ -1,5 +1,10 @@
 const $ = (selector, root = document) => root.querySelector(selector);
 const $$ = (selector, root = document) => [...root.querySelectorAll(selector)];
+// 요소가 없으면(레인 페이지 삭제 등) 스킵하는 안전 이벤트 등록
+const on = (selector, type, handler, root = document) => {
+  const el = $(selector, root);
+  if (el) el.addEventListener(type, handler);
+};
 
 const state = {
   stream: null,
@@ -583,19 +588,21 @@ async function handlePatternImageUpload(event) {
   event.target.value = "";
 }
 
-$("#patternImageUpload").addEventListener("change", handlePatternImageUpload);
-$("#patternCameraUpload").addEventListener("change", handlePatternImageUpload);
+on("#patternImageUpload", "change", handlePatternImageUpload);
+on("#patternCameraUpload", "change", handlePatternImageUpload);
 
-$("#togglePatternOverlay").addEventListener("click", () => {
+on("#togglePatternOverlay", "click", () => {
   if (!activePatternImage) return;
   const visible = lanePatternOverlay.classList.toggle("visible");
-  $("#togglePatternOverlay").textContent = visible ? "표시 중" : "바닥 표시";
+  const btn = $("#togglePatternOverlay");
+  if (btn) btn.textContent = visible ? "표시 중" : "바닥 표시";
   showToast(visible ? "카메라 레인에 패턴을 표시합니다." : "패턴 표시를 숨겼어요.");
 });
 
-$("#removePatternImage").addEventListener("click", () => {
+on("#removePatternImage", "click", () => {
   setPatternOverlayImage("", "", false);
-  $("#patternImageUpload").value = "";
+  const upload = $("#patternImageUpload");
+  if (upload) upload.value = "";
   showToast("패턴 이미지를 제거했어요.");
 });
 
@@ -3082,6 +3089,7 @@ $$(".pattern-tabs button").forEach(button => button.addEventListener("click", ()
 
 function renderCustomPatterns() {
   const container = $("#savedPatterns");
+  if (!container) return;
   container.innerHTML = customPatterns.map(pattern => `
     <button class="saved-pattern-chip" data-pattern-id="${pattern.id}" type="button">
       ${pattern.image ? `<img src="${pattern.image}" alt="">` : `<span class="pattern-mini-lane"></span>`}
@@ -3144,67 +3152,75 @@ function closePatternSource() {
   $("#patternSourceSheet").hidden = true;
 }
 
-$("#openPatternSource").addEventListener("click", () => {
-  $("#patternSourceSheet").hidden = false;
+on("#openPatternSource", "click", () => {
+  const sheet = $("#patternSourceSheet");
+  if (sheet) sheet.hidden = false;
 });
-$("#openPatternSourceFromPicker").addEventListener("click", () => {
+on("#openPatternSourceFromPicker", "click", () => {
   closePatternPicker();
-  $("#patternSourceSheet").hidden = false;
+  const sheet = $("#patternSourceSheet");
+  if (sheet) sheet.hidden = false;
 });
-$("#closePatternSource").addEventListener("click", closePatternSource);
-$("#cancelPatternSource").addEventListener("click", closePatternSource);
+on("#closePatternSource", "click", closePatternSource);
+on("#cancelPatternSource", "click", closePatternSource);
 
-$("#railLaneButton").addEventListener("click", () => {
+on("#railLaneButton", "click", () => {
   if (!activePatternImage) {
     showToast("먼저 패턴 이미지를 등록하거나 패턴을 선택하세요.");
     setPage("coach");
     return;
   }
-  $("#patternCalibrateToggle").click();
+  $("#patternCalibrateToggle")?.click();
 });
 
-$("#railTrajectoryButton").addEventListener("click", event => {
+on("#railTrajectoryButton", "click", event => {
   state.trajectoryVisible = !state.trajectoryVisible;
   stage.classList.toggle("hide-analysis-overlay", !state.trajectoryVisible);
   event.currentTarget.classList.toggle("active", state.trajectoryVisible);
   showToast(state.trajectoryVisible ? "관절과 공 궤적을 표시합니다." : "분석선을 잠시 숨겼어요.");
 });
 
-$("#railPatternButton").addEventListener("click", () => {
+on("#railPatternButton", "click", () => {
   state.pendingPatternKey = state.activePatternKey;
   renderPatternPicker();
-  $("#patternPickerSheet").hidden = false;
+  const sheet = $("#patternPickerSheet");
+  if (sheet) sheet.hidden = false;
 });
 
-$("#closePatternSheet").addEventListener("click", closePatternPicker);
-$("#cancelPatternSheet").addEventListener("click", closePatternPicker);
-$("#confirmPatternSheet").addEventListener("click", () => {
+on("#closePatternSheet", "click", closePatternPicker);
+on("#cancelPatternSheet", "click", closePatternPicker);
+on("#confirmPatternSheet", "click", () => {
   const pattern = getPatternByKey(state.pendingPatternKey);
   if (!pattern) return;
   applyPattern(pattern, state.pendingPatternKey);
   closePatternPicker();
-  $("#railPatternButton").classList.add("active");
+  $("#railPatternButton")?.classList.add("active");
   showToast("선택한 패턴을 분석 화면에 적용했어요.");
 });
 
-$("#viewAnalysisResult").addEventListener("click", () => {
-  $("#viewAnalysisResult").hidden = true;
+on("#viewAnalysisResult", "click", () => {
+  const btn = $("#viewAnalysisResult");
+  if (btn) btn.hidden = true;
   setPage("coach");
-  requestAnimationFrame(() => $("#proShotResult").scrollIntoView({ behavior: "smooth", block: "start" }));
+  requestAnimationFrame(() => $("#proShotResult")?.scrollIntoView({ behavior: "smooth", block: "start" }));
 });
 
-$("#openPatternForm").addEventListener("click", () => {
-  $("#patternForm").hidden = false;
-  $("#openPatternForm").hidden = true;
-  $("#customPatternName").focus();
+on("#openPatternForm", "click", () => {
+  const form = $("#patternForm");
+  if (form) form.hidden = false;
+  const opener = $("#openPatternForm");
+  if (opener) opener.hidden = true;
+  $("#customPatternName")?.focus();
 });
 
-$("#cancelPattern").addEventListener("click", () => {
-  $("#patternForm").hidden = true;
-  $("#openPatternForm").hidden = false;
+on("#cancelPattern", "click", () => {
+  const form = $("#patternForm");
+  if (form) form.hidden = true;
+  const opener = $("#openPatternForm");
+  if (opener) opener.hidden = false;
 });
 
-$("#patternForm").addEventListener("submit", async event => {
+on("#patternForm", "submit", async event => {
   event.preventDefault();
   const length = Number($("#customPatternLength").value);
   const ratio = Number($("#customPatternRatio").value);
@@ -3317,11 +3333,25 @@ $("#captureMode").addEventListener("change", event => {
   applyCaptureMode(event.target.value, true);
 });
 
-applyCaptureMode(state.captureMode);
-
-renderHistory();
-resetShotReport();
-drawShotResult(null, null);
+try {
+  applyCaptureMode(state.captureMode);
+  renderHistory();
+  resetShotReport();
+  drawShotResult(null, null);
+} catch (initError) {
+  console.error("초기화 실패", initError);
+  window.showBootError && window.showBootError("초기화 에러: " + initError.message, "app-init");
+}
 if ("serviceWorker" in navigator && location.protocol.startsWith("http")) {
-  navigator.serviceWorker.register("./sw.js").catch(() => {});
+  navigator.serviceWorker.register("./sw.js?v=35").then(reg => {
+    if (reg.waiting) reg.waiting.postMessage("SKIP_WAITING");
+    reg.addEventListener("updatefound", () => {
+      const newWorker = reg.installing;
+      if (newWorker) newWorker.addEventListener("statechange", () => {
+        if (newWorker.state === "installed" && navigator.serviceWorker.controller) {
+          newWorker.postMessage("SKIP_WAITING");
+        }
+      });
+    });
+  }).catch(() => {});
 }

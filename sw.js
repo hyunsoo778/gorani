@@ -1,9 +1,10 @@
-const CACHE = "lane-lab-v33";
+const CACHE = "lane-lab-v35";
 const ASSETS = [
   "./",
   "./index.html",
   "./styles.css",
   "./app.js",
+  "./bootstrap.js",
   "./pose-engine.js",
   "./manifest.webmanifest",
   "./icons/icon-192.png",
@@ -13,13 +14,17 @@ const ASSETS = [
 ];
 
 self.addEventListener("install", event => {
-  event.waitUntil(caches.open(CACHE).then(cache => cache.addAll(ASSETS)));
+  event.waitUntil(caches.open(CACHE).then(cache => cache.addAll(ASSETS)).catch(() => {}));
   self.skipWaiting();
 });
 
 self.addEventListener("activate", event => {
   event.waitUntil(caches.keys().then(keys => Promise.all(keys.filter(key => key !== CACHE).map(key => caches.delete(key)))));
   self.clients.claim();
+});
+
+self.addEventListener("message", event => {
+  if (event.data === "SKIP_WAITING") self.skipWaiting();
 });
 
 self.addEventListener("fetch", event => {
@@ -35,6 +40,6 @@ self.addEventListener("fetch", event => {
         caches.open(CACHE).then(cache => cache.put(event.request, copy));
       }
       return response;
-    }))
+    }).catch(() => cached))
   );
 });
