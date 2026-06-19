@@ -22,6 +22,8 @@
   });
   window.addEventListener("unhandledrejection", function (e) {
     var msg = e.reason && (e.reason.message || String(e.reason));
+    // Service Worker 실패는 치명적 에러가 아님 (오프라인 기능일 뿐) — 무시
+    if (msg && /ServiceWorker|serviceWorker|sw\.js|bad HTTP response|404/i.test(msg)) return;
     showBootError(msg || "처리되지 않은 Promise 에러", "promise");
   });
   // 로딩 즉시 제거 (DOM 준비 상관없이) + 안전 타임아웃
@@ -3513,7 +3515,7 @@ try {
   window.showBootError && window.showBootError("초기화 에러: " + initError.message, "app-init");
 }
 if ("serviceWorker" in navigator && location.protocol.startsWith("http")) {
-  navigator.serviceWorker.register("./sw.js?v=38").then(reg => {
+  navigator.serviceWorker.register("./sw.js?v=39").then(reg => {
     if (reg.waiting) reg.waiting.postMessage("SKIP_WAITING");
     reg.addEventListener("updatefound", () => {
       const newWorker = reg.installing;
@@ -3523,5 +3525,8 @@ if ("serviceWorker" in navigator && location.protocol.startsWith("http")) {
         }
       });
     });
-  }).catch(() => {});
+  }).catch(error => {
+    // SW 등록 실패는 치명적이지 않음 (오프라인 기능만 없음)
+    console.warn("Service Worker 미사용", error);
+  });
 }
