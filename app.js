@@ -54,6 +54,7 @@ const state = {
   running: false,
   laneConfirmed: false,
   laneConfirmPhase: false,
+  laneManualEdit: false,
   laneDragCorner: null,
   sound: false,
   frame: 0,
@@ -2969,7 +2970,8 @@ async function liveLoop(timestamp = performance.now()) {
   // 레인 확인 단계는 영상 일시정지와 무관하게 점선 사각형 표시
   if (state.laneConfirmPhase) {
     state.frame++;
-    if (state.frame % 15 === 0) runLaneDetection();
+    // 수동 조정 중이 아니면 주기적 재감지
+    if (!state.laneManualEdit && state.frame % 20 === 0) runLaneDetection();
     drawLanePreview(ctx, stage.clientWidth, stage.clientHeight);
     state.animationId = requestAnimationFrame(liveLoop);
     return;
@@ -3110,11 +3112,29 @@ cameraButton.addEventListener("click", () => state.running ? stopCamera() : star
 function enterLaneConfirmPhase() {
   state.laneConfirmPhase = true;
   state.laneConfirmed = false;
+  state.laneManualEdit = false;
+  state.laneDragCorner = null;
   const overlay = $("#laneConfirmOverlay");
   if (overlay) overlay.hidden = false;
   setFlow("camera");
-  // 즉시 1회 감지 시도
-  setTimeout(() => runLaneDetection(), 200);
+  // 1회 자동 감지 시도 (사용자가 드래그하기 전까지만)
+  setTimeout(() => {
+    if (!state.laneManualEdit) runLaneDetection();
+  }, 300);
+}
+
+function runLaneDetection() {
+  if (!state.running || !state.laneConfirmPhase) return;
+  // 사용자가 수동 조정 중이면 자동 감지 중단 (덮어쓰기 방지)
+  if (state.laneManualEdit) return;
+  const result = detectLaneByMarkers();
+  const statusEl = $("#laneConfirmStatus");
+  if (result) {
+    patternCorners = result.corners;
+    if (statusEl) statusEl.textContent = "초록 사각형이 레인 위에 있나요? 안 맞으면 모서리를 드래그하세요.";
+  } else {
+    if (statusEl) statusEl.textContent = "자동 감지가 어려워요. 모서리 4개를 직접 드래그해 레인에 맞춰주세요.";
+  }
 }
 
 function exitLaneConfirmPhase() {
@@ -3129,7 +3149,7 @@ const LANE_CORNER_KEYS = ["topLeft", "topRight", "bottomLeft", "bottomRight"];
 function laneCornerAt(touchX, touchY) {
   const w = stage.clientWidth;
   const h = stage.clientHeight;
-  const hitRadius = 28;
+  const hitRadius = 32;
   for (const key of LANE_CORNER_KEYS) {
     const cx = patternCorners[key].x / 100 * w;
     const cy = patternCorners[key].y / 100 * h;
@@ -3147,17 +3167,21 @@ stage.addEventListener("pointerdown", event => {
   const corner = laneCornerAt(x, y);
   if (corner) {
     state.laneDragCorner = corner;
-    stage.setPointerCapture(event.pointerId);
+    state.laneManualEdit = true; // 수동 조정 시작 → 자동 감지 중단
+    try { stage.setPointerCapture(event.pointerId); } catch (e) {}
     event.preventDefault();
+    const statusEl = $("#laneConfirmStatus");
+    if (statusEl) statusEl.textContent = "모서리를 움직여 레인에 맞추세요. 다 맞으면 '이 레인 맞음'을 누르세요.";
   }
 });
 
 stage.addEventListener("pointermove", event => {
   if (!state.laneConfirmPhase || !state.laneDragCorner) return;
   const rect = stage.getBoundingClientRect();
-  const x = Math.max(0, Math.min(100, (event.clientX - rect.left) / stage.clientWidth * 100));
-  const y = Math.max(0, Math.min(100, (event.clientY - rect.top) / stage.clientHeight * 100));
+  const x = Math.max(1, Math.min(99, (event.clientX - rect.left) / stage.clientWidth * 100));
+  const y = Math.max(1, Math.min(99, (event.clientY - rect.top) / stage.clientHeight * 100));
   patternCorners[state.laneDragCorner] = { x, y };
+  event.preventDefault();
 });
 
 stage.addEventListener("pointerup", () => {
@@ -3166,6 +3190,7 @@ stage.addEventListener("pointerup", () => {
 stage.addEventListener("pointercancel", () => {
   state.laneDragCorner = null;
 });
+
 
 function runLaneDetection() {
   if (!state.running || !state.laneConfirmPhase) return;
@@ -3181,6 +3206,7 @@ function runLaneDetection() {
 }
 
 on("#reDetectLane", "click", () => {
+  state.laneManualEdit = false;
   runLaneDetection();
   showToast("레인을 다시 감지했어요.");
 });
@@ -3786,7 +3812,7 @@ try {
   window.showBootError && window.showBootError("초기화 에러: " + initError.message, "app-init");
 }
 if ("serviceWorker" in navigator && location.protocol.startsWith("http")) {
-  navigator.serviceWorker.register("./sw.js?v=43").then(reg => {
+  navigator.serviceWorker.register("./sw.js?v=44").then(reg => {
     if (reg.waiting) reg.waiting.postMessage("SKIP_WAITING");
     reg.addEventListener("updatefound", () => {
       const newWorker = reg.installing;

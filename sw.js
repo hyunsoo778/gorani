@@ -1,4 +1,4 @@
-const CACHE = "lane-lab-v43";
+const CACHE = "lane-lab-v44";
 const ASSETS = [
   "./",
   "./index.html",
