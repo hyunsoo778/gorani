@@ -54,6 +54,7 @@ const state = {
   running: false,
   laneConfirmed: false,
   laneConfirmPhase: false,
+  laneDragCorner: null,
   sound: false,
   frame: 0,
   animationId: null,
@@ -1041,6 +1042,7 @@ function detectLaneByMarkers() {
     const pinMaxX = width * .7;
     const pinMinY = height * .15;
     const pinMaxY = height * .5;
+    let pinDeckLeft = pinMaxX, pinDeckRight = pinMinX;
     let pinSumX = 0, pinSumY = 0, pinCount = 0, pinIntensity = 0;
     for (let y = pinMinY; y <= pinMaxY; y++) {
       for (let x = pinMinX; x <= pinMaxX; x++) {
@@ -1048,14 +1050,18 @@ function detectLaneByMarkers() {
         const idx = (y * width + x) * 4;
         pinSumX += x; pinSumY += y; pinCount++;
         pinIntensity += Math.max(data[idx], data[idx + 1], data[idx + 2]);
+        if (x < pinDeckLeft) pinDeckLeft = x;
+        if (x > pinDeckRight) pinDeckRight = x;
       }
     }
     if (pinCount > 6) {
+      // 핀덱 실제 너비 (핀들이 퍼져있는 좌우 범위)
+      const pinDeckWidth = Math.max(8, pinDeckRight - pinDeckLeft);
       farMarker = {
         cx: pinSumX / pinCount,
         cy: pinSumY / pinCount,
         count: pinCount,
-        boxW: 8,
+        boxW: pinDeckWidth,
         boxH: 8,
         isPin: true
       };
@@ -1072,13 +1078,25 @@ function detectLaneByMarkers() {
   const perpY = axisX / axisLen;
 
   const nearRadius = Math.max(nearMarker.boxW, nearMarker.boxH) / 2;
-  const farRadius = farMarker.isPin
-    ? nearRadius * .42
-    : Math.max(farMarker.boxW, farMarker.boxH) / 2;
 
-  const LANE_HALF_RATIO = 6.2;
-  const halfNear = nearRadius * LANE_HALF_RATIO;
-  const halfFar = farRadius * LANE_HALF_RATIO;
+  // 레인 반폭 추정 개선
+  // - 핀덱 기준: 핀이 퍼진 너비(farMarker.boxW)가 핀덱 레인 폭(≈42인치=39보드)에 해당
+  //   → halfFar = boxW / 2 (핀덱은 레인 거의 전폭)
+  // - 마커 기준: 마커 크기 × 비율 (기존 방식, 폴백)
+  let halfFar, halfNear;
+  if (farMarker.isPin) {
+    halfFar = farMarker.boxW / 2 * 1.08; // 핀덱 너비의 절반 (레인 폭 약간 여유)
+    // near는 far에서 원근 비율로 확장 (가까울수록 넓음)
+    const perspectiveRatio = nearMarker.cy >= 0
+      ? Math.max(1.3, (nearMarker.cy / Math.max(1, farMarker.cy)))
+      : 1.8;
+    halfNear = halfFar * perspectiveRatio;
+  } else {
+    const farRadius = Math.max(farMarker.boxW, farMarker.boxH) / 2;
+    const LANE_HALF_RATIO = 6.2;
+    halfNear = nearRadius * LANE_HALF_RATIO;
+    halfFar = farRadius * LANE_HALF_RATIO;
+  }
 
   const bottomL = { x: nearMarker.cx - perpX * halfNear, y: nearMarker.cy - perpY * halfNear };
   const bottomR = { x: nearMarker.cx + perpX * halfNear, y: nearMarker.cy + perpY * halfNear };
@@ -1828,30 +1846,51 @@ function drawLanePreview(targetCtx, w, h) {
   const tr = { x: patternCorners.topRight.x / 100 * w, y: patternCorners.topRight.y / 100 * h };
   const bl = { x: patternCorners.bottomLeft.x / 100 * w, y: patternCorners.bottomLeft.y / 100 * h };
   const br = { x: patternCorners.bottomRight.x / 100 * w, y: patternCorners.bottomRight.y / 100 * h };
+  // 레인 영역 반투명 채우기
   targetCtx.save();
-  targetCtx.strokeStyle = "#c9ff3d";
-  targetCtx.lineWidth = 2.5;
-  targetCtx.setLineDash([8, 6]);
-  targetCtx.shadowColor = "rgba(201,255,61,.6)";
-  targetCtx.shadowBlur = 8;
+  targetCtx.fillStyle = "rgba(201,255,61,.08)";
   targetCtx.beginPath();
   targetCtx.moveTo(tl.x, tl.y);
   targetCtx.lineTo(tr.x, tr.y);
   targetCtx.lineTo(br.x, br.y);
   targetCtx.lineTo(bl.x, bl.y);
   targetCtx.closePath();
+  targetCtx.fill();
+  // 점선 테두리
+  targetCtx.strokeStyle = "#c9ff3d";
+  targetCtx.lineWidth = 2.5;
+  targetCtx.setLineDash([8, 6]);
+  targetCtx.shadowColor = "rgba(201,255,61,.6)";
+  targetCtx.shadowBlur = 8;
   targetCtx.stroke();
   targetCtx.setLineDash([]);
-  // 모서리 점
-  [tl, tr, bl, br].forEach(p => {
-    targetCtx.fillStyle = "#07110f";
+  // 모서리 핸들 (크게, 드래그 가능 표시)
+  const corners = [
+    { p: tl, key: "topLeft" },
+    { p: tr, key: "topRight" },
+    { p: bl, key: "bottomLeft" },
+    { p: br, key: "bottomRight" }
+  ];
+  corners.forEach(({ p, key }) => {
+    targetCtx.fillStyle = state.laneDragCorner === key ? "#c9ff3d" : "#07110f";
     targetCtx.strokeStyle = "#c9ff3d";
-    targetCtx.lineWidth = 2;
+    targetCtx.lineWidth = 2.5;
+    targetCtx.shadowColor = "#c9ff3d";
+    targetCtx.shadowBlur = 10;
     targetCtx.beginPath();
-    targetCtx.arc(p.x, p.y, 5, 0, Math.PI * 2);
+    targetCtx.arc(p.x, p.y, 11, 0, Math.PI * 2);
     targetCtx.fill();
     targetCtx.stroke();
   });
+  // 중앙 안내 텍스트
+  targetCtx.shadowBlur = 0;
+  targetCtx.fillStyle = "rgba(244,247,242,.9)";
+  targetCtx.font = "600 11px system-ui";
+  targetCtx.textAlign = "center";
+  targetCtx.textBaseline = "middle";
+  const cx = (tl.x + tr.x + bl.x + br.x) / 4;
+  const cy = (tl.y + tr.y + bl.y + br.y) / 4;
+  targetCtx.fillText("모서리를 드래그해 맞추세요", cx, cy);
   targetCtx.restore();
 }
 
@@ -3080,9 +3119,53 @@ function enterLaneConfirmPhase() {
 
 function exitLaneConfirmPhase() {
   state.laneConfirmPhase = false;
+  state.laneDragCorner = null;
   const overlay = $("#laneConfirmOverlay");
   if (overlay) overlay.hidden = true;
 }
+
+// ── 레인 확인 단계: 모서리 드래그로 사각형 조정 ──
+const LANE_CORNER_KEYS = ["topLeft", "topRight", "bottomLeft", "bottomRight"];
+function laneCornerAt(touchX, touchY) {
+  const w = stage.clientWidth;
+  const h = stage.clientHeight;
+  const hitRadius = 28;
+  for (const key of LANE_CORNER_KEYS) {
+    const cx = patternCorners[key].x / 100 * w;
+    const cy = patternCorners[key].y / 100 * h;
+    if (Math.hypot(touchX - cx, touchY - cy) <= hitRadius) return key;
+  }
+  return null;
+}
+
+stage.addEventListener("pointerdown", event => {
+  if (!state.laneConfirmPhase) return;
+  if (event.target.closest("button, .lane-confirm-overlay")) return;
+  const rect = stage.getBoundingClientRect();
+  const x = event.clientX - rect.left;
+  const y = event.clientY - rect.top;
+  const corner = laneCornerAt(x, y);
+  if (corner) {
+    state.laneDragCorner = corner;
+    stage.setPointerCapture(event.pointerId);
+    event.preventDefault();
+  }
+});
+
+stage.addEventListener("pointermove", event => {
+  if (!state.laneConfirmPhase || !state.laneDragCorner) return;
+  const rect = stage.getBoundingClientRect();
+  const x = Math.max(0, Math.min(100, (event.clientX - rect.left) / stage.clientWidth * 100));
+  const y = Math.max(0, Math.min(100, (event.clientY - rect.top) / stage.clientHeight * 100));
+  patternCorners[state.laneDragCorner] = { x, y };
+});
+
+stage.addEventListener("pointerup", () => {
+  state.laneDragCorner = null;
+});
+stage.addEventListener("pointercancel", () => {
+  state.laneDragCorner = null;
+});
 
 function runLaneDetection() {
   if (!state.running || !state.laneConfirmPhase) return;
@@ -3703,7 +3786,7 @@ try {
   window.showBootError && window.showBootError("초기화 에러: " + initError.message, "app-init");
 }
 if ("serviceWorker" in navigator && location.protocol.startsWith("http")) {
-  navigator.serviceWorker.register("./sw.js?v=42").then(reg => {
+  navigator.serviceWorker.register("./sw.js?v=43").then(reg => {
     if (reg.waiting) reg.waiting.postMessage("SKIP_WAITING");
     reg.addEventListener("updatefound", () => {
       const newWorker = reg.installing;
