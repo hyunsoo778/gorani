@@ -2927,19 +2927,20 @@ function analyzePose(points, timestamp) {
 
 async function liveLoop(timestamp = performance.now()) {
   if (!state.running) return;
+  // 레인 확인 단계는 영상 일시정지와 무관하게 점선 사각형 표시
+  if (state.laneConfirmPhase) {
+    state.frame++;
+    if (state.frame % 15 === 0) runLaneDetection();
+    drawLanePreview(ctx, stage.clientWidth, stage.clientHeight);
+    state.animationId = requestAnimationFrame(liveLoop);
+    return;
+  }
   if (state.fileVideo && video.paused) {
     $("#modelStatus").textContent = "영상 일시정지";
     state.animationId = null;
     return;
   }
   state.frame++;
-  // 레인 확인 단계: 점선 사각형 미리보기 + 주기적 재감지 (공 추적 안 함)
-  if (state.laneConfirmPhase) {
-    if (state.frame % 15 === 0) runLaneDetection();
-    drawLanePreview(ctx, stage.clientWidth, stage.clientHeight);
-    state.animationId = requestAnimationFrame(liveLoop);
-    return;
-  }
   // 포즈와 무관하게 공 추적 (샷 미감지 시에도 공이 지나가면 궤적 기록)
   trackBallStandalone(timestamp);
   if (!state.poseBusy && video.readyState >= 2 && video.currentTime !== state.lastVideoTime) {
@@ -3107,7 +3108,13 @@ on("#confirmLane", "click", () => {
   exitLaneConfirmPhase();
   $(".live-badge").innerHTML = "<span></span> 분석 중";
   $("#modelStatus").textContent = "레인 확정 · 투구해주세요";
-  showToast("레인을 확정했어요. 이제 투구해주세요!");
+  // 영상 모드면 레인 확인 후 재생 시작
+  if (state.fileVideo && video.paused) {
+    video.play().catch(() => {});
+    showToast("레인을 확정했어요. 영상 분석을 시작합니다!");
+  } else {
+    showToast("레인을 확정했어요. 이제 투구해주세요!");
+  }
 });
 
 $("#flipButton").addEventListener("click", async () => {
@@ -3129,18 +3136,25 @@ $("#videoUpload").addEventListener("change", event => {
   video.loop = false;
   video.controls = false;
   state.fileVideo = true;
+  state.laneConfirmed = false;
+  state.laneConfirmPhase = true;
   $("#videoPlaybackControls").hidden = false;
   stage.classList.add("file-video");
-  video.play();
   video.classList.add("visible");
   placeholder.classList.add("hidden");
   state.running = true;
   resetAnalysisForSeek();
   stage.classList.add("analyzing");
   cameraButton.classList.add("active");
+  // 영상 첫 프레임 로드 후 일시정지 → 레인 확인 단계 진입
+  video.addEventListener("loadeddata", () => {
+    video.pause();
+    video.currentTime = 0;
+    enterLaneConfirmPhase();
+  }, { once: true });
   liveLoop();
   updateVideoPlaybackUI();
-  showToast("영상을 불러왔어요. 아래 버튼으로 정지할 수 있습니다.");
+  showToast("영상을 불러왔어요. 먼저 레인을 확인해주세요.");
 });
 
 function setMetrics(result) {
@@ -3689,7 +3703,7 @@ try {
   window.showBootError && window.showBootError("초기화 에러: " + initError.message, "app-init");
 }
 if ("serviceWorker" in navigator && location.protocol.startsWith("http")) {
-  navigator.serviceWorker.register("./sw.js?v=41").then(reg => {
+  navigator.serviceWorker.register("./sw.js?v=42").then(reg => {
     if (reg.waiting) reg.waiting.postMessage("SKIP_WAITING");
     reg.addEventListener("updatefound", () => {
       const newWorker = reg.installing;
