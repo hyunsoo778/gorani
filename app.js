@@ -52,10 +52,6 @@ const state = {
   stream: null,
   facingMode: "environment",
   running: false,
-  laneConfirmed: false,
-  laneConfirmPhase: false,
-  laneManualEdit: false,
-  laneDragCorner: null,
   sound: false,
   frame: 0,
   animationId: null,
@@ -266,22 +262,18 @@ function runAnalysisProgress() {
 
 function setPatternOverlayImage(dataUrl, label = "OIL PATTERN", show = true) {
   activePatternImage = dataUrl || "";
-  $("#lanePatternImage").src = activePatternImage;
-  $("#patternOverlayLabel").textContent = label.toUpperCase();
-  $("#togglePatternOverlay").disabled = !activePatternImage;
-  $("#patternCalibrateToggle").hidden = !activePatternImage;
-  $("#patternPreview").hidden = !activePatternImage;
-  $("#overlayControls").hidden = !activePatternImage;
+  const patternImg = $("#lanePatternImage");
+  if (patternImg) {
+    patternImg.src = activePatternImage;
+    patternImg.hidden = !activePatternImage;
+  }
+  const overlayLabel = $("#patternOverlayLabel");
+  if (overlayLabel) overlayLabel.textContent = label.toUpperCase();
+  const calibToggle = $("#patternCalibrateToggle");
+  if (calibToggle) calibToggle.hidden = !activePatternImage;
+  const uploadToggle = $("#patternUploadToggle");
+  if (uploadToggle) uploadToggle.textContent = activePatternImage ? "▦ 패턴 표시중" : "▦ 패턴 올리기";
   if (activePatternImage) {
-    $("#patternCropPreview").getContext("2d").clearRect(0, 0, 240, 640);
-    const previewImage = new Image();
-    previewImage.onload = () => {
-      const preview = $("#patternCropPreview");
-      preview.width = 240;
-      preview.height = 640;
-      preview.getContext("2d").drawImage(previewImage, 0, 0, preview.width, preview.height);
-    };
-    previewImage.src = activePatternImage;
     patternTextureImage = new Image();
     patternTextureImage.onload = () => renderPatternProjection();
     patternTextureImage.src = activePatternImage;
@@ -292,7 +284,6 @@ function setPatternOverlayImage(dataUrl, label = "OIL PATTERN", show = true) {
     localStorage.removeItem("lane-lab-active-pattern-image");
   }
   lanePatternOverlay.classList.toggle("visible", Boolean(activePatternImage && show));
-  $("#togglePatternOverlay").textContent = lanePatternOverlay.classList.contains("visible") ? "표시 중" : "바닥 표시";
 }
 
 function interpolateQuad(corners, u, v) {
@@ -592,9 +583,12 @@ function processPatternImage(file) {
 
 function setPatternRenderProgress(value) {
   const modal = $("#patternRenderModal");
+  if (!modal) return;
   modal.hidden = false;
-  $("#patternRenderPercent").textContent = `${value}%`;
-  $("#patternRenderBar").style.width = `${value}%`;
+  const pct = $("#patternRenderPercent");
+  if (pct) pct.textContent = `${value}%`;
+  const bar = $("#patternRenderBar");
+  if (bar) bar.style.width = `${value}%`;
   const thresholds = [5, 32, 62, 88];
   $$("[data-pattern-render-step]", modal).forEach((step, index) => {
     step.classList.toggle("active", value >= thresholds[index] && value < (thresholds[index + 1] || 101));
@@ -613,24 +607,20 @@ function finishPatternRenderProgress(message = "패턴 렌더링이 완료됐어
 async function handlePatternImageUpload(event) {
   const file = event.target.files[0];
   if (!file) return;
-  $("#patternSourceSheet").hidden = true;
+  const modal = $("#patternRenderModal");
+  if (modal) modal.hidden = false;
   try {
     setPatternRenderProgress(5);
-    $("#patternAnalysisTitle").textContent = "패턴표 분석 중";
-    $("#patternAnalysisStatus").textContent = "오일 그래프를 찾고 있습니다.";
-    $("#patternAnalysisResult").hidden = true;
     const processed = await processPatternImage(file);
-    setPatternRenderProgress(32);
+    setPatternRenderProgress(40);
     const fallbackName = file.name.replace(/\.[^.]+$/, "");
     setPatternOverlayImage(processed.overlay, fallbackName, true);
-    const analysis = await recognizePatternDocument(processed.source, fallbackName);
-    setPatternRenderProgress(67);
-    if (!analysis.ratio && processed.graph.ratio) analysis.ratio = processed.graph.ratio;
-    applyAnalyzedPattern(analysis, processed.overlay);
-    setPatternRenderProgress(90);
-    finishPatternRenderProgress(analysis.length ? "패턴을 보관함에 저장하고 레인에 적용했어요." : "그래프를 적용했어요. 길이는 확인해주세요.");
-  } catch {
-    $("#patternRenderModal").hidden = true;
+    setPatternRenderProgress(80);
+    if (modal) modal.hidden = true;
+    showToast("패턴을 레인에 적용했어요. '패턴 맞춤'으로 위치를 조절하세요.");
+  } catch (error) {
+    console.warn("패턴 처리 실패", error);
+    if (modal) modal.hidden = true;
     showToast("패턴표 이미지를 읽을 수 없어요.");
   }
   event.target.value = "";
@@ -638,6 +628,19 @@ async function handlePatternImageUpload(event) {
 
 on("#patternImageUpload", "change", handlePatternImageUpload);
 on("#patternCameraUpload", "change", handlePatternImageUpload);
+
+// 카메라 화면의 "패턴 올리기" 버튼 → 파일 선택 다이얼로그 열기
+on("#patternUploadToggle", "click", () => {
+  if (activePatternImage) {
+    // 이미 패턴이 있으면 토글 (표시/숨김)
+    const visible = lanePatternOverlay.classList.toggle("visible");
+    const btn = $("#patternUploadToggle");
+    if (btn) btn.textContent = visible ? "▦ 패턴 표시중" : "▦ 패턴 숨김";
+  } else {
+    const input = $("#patternImageUpload");
+    if (input) input.click();
+  }
+});
 
 on("#togglePatternOverlay", "click", () => {
   if (!activePatternImage) return;
@@ -1840,61 +1843,6 @@ function drawShotRadarCard(values) {
   });
 }
 
-// 레인 확인 단계에서 patternCorners 사각형을 점선으로 그리는 미리보기
-function drawLanePreview(targetCtx, w, h) {
-  targetCtx.clearRect(0, 0, w, h);
-  const tl = { x: patternCorners.topLeft.x / 100 * w, y: patternCorners.topLeft.y / 100 * h };
-  const tr = { x: patternCorners.topRight.x / 100 * w, y: patternCorners.topRight.y / 100 * h };
-  const bl = { x: patternCorners.bottomLeft.x / 100 * w, y: patternCorners.bottomLeft.y / 100 * h };
-  const br = { x: patternCorners.bottomRight.x / 100 * w, y: patternCorners.bottomRight.y / 100 * h };
-  // 레인 영역 반투명 채우기
-  targetCtx.save();
-  targetCtx.fillStyle = "rgba(201,255,61,.08)";
-  targetCtx.beginPath();
-  targetCtx.moveTo(tl.x, tl.y);
-  targetCtx.lineTo(tr.x, tr.y);
-  targetCtx.lineTo(br.x, br.y);
-  targetCtx.lineTo(bl.x, bl.y);
-  targetCtx.closePath();
-  targetCtx.fill();
-  // 점선 테두리
-  targetCtx.strokeStyle = "#c9ff3d";
-  targetCtx.lineWidth = 2.5;
-  targetCtx.setLineDash([8, 6]);
-  targetCtx.shadowColor = "rgba(201,255,61,.6)";
-  targetCtx.shadowBlur = 8;
-  targetCtx.stroke();
-  targetCtx.setLineDash([]);
-  // 모서리 핸들 (크게, 드래그 가능 표시)
-  const corners = [
-    { p: tl, key: "topLeft" },
-    { p: tr, key: "topRight" },
-    { p: bl, key: "bottomLeft" },
-    { p: br, key: "bottomRight" }
-  ];
-  corners.forEach(({ p, key }) => {
-    targetCtx.fillStyle = state.laneDragCorner === key ? "#c9ff3d" : "#07110f";
-    targetCtx.strokeStyle = "#c9ff3d";
-    targetCtx.lineWidth = 2.5;
-    targetCtx.shadowColor = "#c9ff3d";
-    targetCtx.shadowBlur = 10;
-    targetCtx.beginPath();
-    targetCtx.arc(p.x, p.y, 11, 0, Math.PI * 2);
-    targetCtx.fill();
-    targetCtx.stroke();
-  });
-  // 중앙 안내 텍스트
-  targetCtx.shadowBlur = 0;
-  targetCtx.fillStyle = "rgba(244,247,242,.9)";
-  targetCtx.font = "600 11px system-ui";
-  targetCtx.textAlign = "center";
-  targetCtx.textBaseline = "middle";
-  const cx = (tl.x + tr.x + bl.x + br.x) / 4;
-  const cy = (tl.y + tr.y + bl.y + br.y) / 4;
-  targetCtx.fillText("모서리를 드래그해 맞추세요", cx, cy);
-  targetCtx.restore();
-}
-
 // 포즈 미감지 상태에서 궤적만 그리는 함수 (trackBallStandalone과 함께 사용)
 function drawTrajectoryOnly(targetCtx, w, h) {
   if (state.trajectory.length < 2) return;
@@ -2353,7 +2301,6 @@ function stageToTracker(point, trackerW, trackerH) {
 // 포즈 감지와 무관하게 공만 보여도 궤적을 추적하는 독립 함수
 // 샷(손목 동작)이 감지되지 않아도 공 움직임이 뚜렷하면 trajectory를 채운다
 function trackBallStandalone(timestamp) {
-  if (!state.laneConfirmed) return;
   if (state.shot || !state.running || video.readyState < 2) return;
   const now = timestamp;
   if (now - state.lastStandaloneScan < 33) return;
@@ -2452,7 +2399,6 @@ function trackBallStandalone(timestamp) {
 }
 
 function detectBall(timestamp, wristPoint, posePoints) {
-  if (!state.laneConfirmed) return;
   if (!state.shot || !state.ballTracker || video.readyState < 2) return;
   const profile = trackingProfile();
   if (timestamp - state.ballTracker.startedAt < (state.ballTracker.seeded ? profile.initialDelay : 220)) return;
@@ -2967,15 +2913,6 @@ function analyzePose(points, timestamp) {
 
 async function liveLoop(timestamp = performance.now()) {
   if (!state.running) return;
-  // 레인 확인 단계는 영상 일시정지와 무관하게 점선 사각형 표시
-  if (state.laneConfirmPhase) {
-    state.frame++;
-    // 수동 조정 중이 아니면 주기적 재감지
-    if (!state.laneManualEdit && state.frame % 20 === 0) runLaneDetection();
-    drawLanePreview(ctx, stage.clientWidth, stage.clientHeight);
-    state.animationId = requestAnimationFrame(liveLoop);
-    return;
-  }
   if (state.fileVideo && video.paused) {
     $("#modelStatus").textContent = "영상 일시정지";
     state.animationId = null;
@@ -3044,8 +2981,6 @@ async function startCamera() {
     await video.play();
     state.running = true;
     state.fileVideo = false;
-    state.laneConfirmed = false;
-    state.laneConfirmPhase = true;
     state.prevWrist = null;
     state.shot = null;
     state.trajectory = [];
@@ -3060,11 +2995,11 @@ async function startCamera() {
     video.classList.add("visible");
     placeholder.classList.add("hidden");
     stage.classList.add("analyzing");
-    $(".live-badge").innerHTML = "<span></span> 레인 확인 중";
-    enterLaneConfirmPhase();
+    $(".live-badge").innerHTML = "<span></span> 분석 중";
+    setFlow("camera");
     cancelAnimationFrame(state.animationId);
     liveLoop();
-    showToast("카메라를 켰어요. 먼저 투구할 레인을 확인해주세요.");
+    showToast("카메라 분석을 시작했어요.");
   } catch (error) {
     showToast(error.name === "NotAllowedError" ? "카메라 권한을 허용해주세요." : "카메라를 시작할 수 없어요.");
   }
@@ -3074,8 +3009,6 @@ function stopCamera() {
   state.stream?.getTracks().forEach(track => track.stop());
   state.stream = null;
   state.running = false;
-  state.laneConfirmed = false;
-  state.laneConfirmPhase = false;
   state.shot = null;
   state.prevWrist = null;
   state.trajectory = [];
@@ -3084,7 +3017,6 @@ function stopCamera() {
   state.smoothedPose = null;
   state.poseHistory = [];
   state.autoBallLock = null;
-  exitLaneConfirmPhase();
   cancelAnimationFrame(state.animationId);
   cameraButton.classList.remove("active");
   stage.classList.remove("analyzing");
@@ -3108,124 +3040,6 @@ function stopCamera() {
 
 cameraButton.addEventListener("click", () => state.running ? stopCamera() : startCamera());
 
-// ── 레인 확인 단계 ──
-function enterLaneConfirmPhase() {
-  state.laneConfirmPhase = true;
-  state.laneConfirmed = false;
-  state.laneManualEdit = false;
-  state.laneDragCorner = null;
-  const overlay = $("#laneConfirmOverlay");
-  if (overlay) overlay.hidden = false;
-  setFlow("camera");
-  // 1회 자동 감지 시도 (사용자가 드래그하기 전까지만)
-  setTimeout(() => {
-    if (!state.laneManualEdit) runLaneDetection();
-  }, 300);
-}
-
-function runLaneDetection() {
-  if (!state.running || !state.laneConfirmPhase) return;
-  // 사용자가 수동 조정 중이면 자동 감지 중단 (덮어쓰기 방지)
-  if (state.laneManualEdit) return;
-  const result = detectLaneByMarkers();
-  const statusEl = $("#laneConfirmStatus");
-  if (result) {
-    patternCorners = result.corners;
-    if (statusEl) statusEl.textContent = "초록 사각형이 레인 위에 있나요? 안 맞으면 모서리를 드래그하세요.";
-  } else {
-    if (statusEl) statusEl.textContent = "자동 감지가 어려워요. 모서리 4개를 직접 드래그해 레인에 맞춰주세요.";
-  }
-}
-
-function exitLaneConfirmPhase() {
-  state.laneConfirmPhase = false;
-  state.laneDragCorner = null;
-  const overlay = $("#laneConfirmOverlay");
-  if (overlay) overlay.hidden = true;
-}
-
-// ── 레인 확인 단계: 모서리 드래그로 사각형 조정 ──
-const LANE_CORNER_KEYS = ["topLeft", "topRight", "bottomLeft", "bottomRight"];
-function laneCornerAt(touchX, touchY) {
-  const w = stage.clientWidth;
-  const h = stage.clientHeight;
-  const hitRadius = 32;
-  for (const key of LANE_CORNER_KEYS) {
-    const cx = patternCorners[key].x / 100 * w;
-    const cy = patternCorners[key].y / 100 * h;
-    if (Math.hypot(touchX - cx, touchY - cy) <= hitRadius) return key;
-  }
-  return null;
-}
-
-stage.addEventListener("pointerdown", event => {
-  if (!state.laneConfirmPhase) return;
-  if (event.target.closest("button, .lane-confirm-overlay")) return;
-  const rect = stage.getBoundingClientRect();
-  const x = event.clientX - rect.left;
-  const y = event.clientY - rect.top;
-  const corner = laneCornerAt(x, y);
-  if (corner) {
-    state.laneDragCorner = corner;
-    state.laneManualEdit = true; // 수동 조정 시작 → 자동 감지 중단
-    try { stage.setPointerCapture(event.pointerId); } catch (e) {}
-    event.preventDefault();
-    const statusEl = $("#laneConfirmStatus");
-    if (statusEl) statusEl.textContent = "모서리를 움직여 레인에 맞추세요. 다 맞으면 '이 레인 맞음'을 누르세요.";
-  }
-});
-
-stage.addEventListener("pointermove", event => {
-  if (!state.laneConfirmPhase || !state.laneDragCorner) return;
-  const rect = stage.getBoundingClientRect();
-  const x = Math.max(1, Math.min(99, (event.clientX - rect.left) / stage.clientWidth * 100));
-  const y = Math.max(1, Math.min(99, (event.clientY - rect.top) / stage.clientHeight * 100));
-  patternCorners[state.laneDragCorner] = { x, y };
-  event.preventDefault();
-});
-
-stage.addEventListener("pointerup", () => {
-  state.laneDragCorner = null;
-});
-stage.addEventListener("pointercancel", () => {
-  state.laneDragCorner = null;
-});
-
-
-function runLaneDetection() {
-  if (!state.running || !state.laneConfirmPhase) return;
-  const result = detectLaneByMarkers();
-  const statusEl = $("#laneConfirmStatus");
-  if (result) {
-    patternCorners = result.corners;
-    updateOverlayControls?.();
-    if (statusEl) statusEl.textContent = "점선 사각형이 레인 위에 있나요? 맞으면 확정해주세요.";
-  } else {
-    if (statusEl) statusEl.textContent = "레인을 잘 못 찾았어요. 카메라를 레인이 잘 보이게 조금 옮겨주세요.";
-  }
-}
-
-on("#reDetectLane", "click", () => {
-  state.laneManualEdit = false;
-  runLaneDetection();
-  showToast("레인을 다시 감지했어요.");
-});
-
-on("#confirmLane", "click", () => {
-  state.laneConfirmed = true;
-  state.laneConfirmPhase = false;
-  exitLaneConfirmPhase();
-  $(".live-badge").innerHTML = "<span></span> 분석 중";
-  $("#modelStatus").textContent = "레인 확정 · 투구해주세요";
-  // 영상 모드면 레인 확인 후 재생 시작
-  if (state.fileVideo && video.paused) {
-    video.play().catch(() => {});
-    showToast("레인을 확정했어요. 영상 분석을 시작합니다!");
-  } else {
-    showToast("레인을 확정했어요. 이제 투구해주세요!");
-  }
-});
-
 $("#flipButton").addEventListener("click", async () => {
   state.facingMode = state.facingMode === "environment" ? "user" : "environment";
   if (state.running) {
@@ -3245,25 +3059,18 @@ $("#videoUpload").addEventListener("change", event => {
   video.loop = false;
   video.controls = false;
   state.fileVideo = true;
-  state.laneConfirmed = false;
-  state.laneConfirmPhase = true;
   $("#videoPlaybackControls").hidden = false;
   stage.classList.add("file-video");
+  video.play();
   video.classList.add("visible");
   placeholder.classList.add("hidden");
   state.running = true;
   resetAnalysisForSeek();
   stage.classList.add("analyzing");
   cameraButton.classList.add("active");
-  // 영상 첫 프레임 로드 후 일시정지 → 레인 확인 단계 진입
-  video.addEventListener("loadeddata", () => {
-    video.pause();
-    video.currentTime = 0;
-    enterLaneConfirmPhase();
-  }, { once: true });
   liveLoop();
   updateVideoPlaybackUI();
-  showToast("영상을 불러왔어요. 먼저 레인을 확인해주세요.");
+  showToast("영상을 불러왔어요. 아래 버튼으로 정지할 수 있습니다.");
 });
 
 function setMetrics(result) {
@@ -3812,7 +3619,7 @@ try {
   window.showBootError && window.showBootError("초기화 에러: " + initError.message, "app-init");
 }
 if ("serviceWorker" in navigator && location.protocol.startsWith("http")) {
-  navigator.serviceWorker.register("./sw.js?v=44").then(reg => {
+  navigator.serviceWorker.register("./sw.js?v=45").then(reg => {
     if (reg.waiting) reg.waiting.postMessage("SKIP_WAITING");
     reg.addEventListener("updatefound", () => {
       const newWorker = reg.installing;

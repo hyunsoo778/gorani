@@ -60,6 +60,7 @@ h1 em { color: var(--muted); font-style: normal; font-weight: 500; }
 .pattern-handle.bottom-right { left: var(--pattern-bottom-right); top: var(--pattern-br-y); }
 .lane-pattern-overlay.editing #patternProjectionCanvas { filter:saturate(1.25) contrast(1.08) drop-shadow(0 0 3px rgba(201,255,61,.7)); }
 .pattern-calibrate-toggle { position: absolute; z-index: 8; top: 53px; right: 15px; padding: 7px 9px; color: var(--lime); border: 1px solid rgba(201,255,61,.35); border-radius: 7px; background: rgba(4,9,8,.72); font-size: 8px; cursor: pointer; }
+.pattern-upload-toggle { position: absolute; z-index: 8; top: 53px; left: 15px; padding: 7px 9px; color: var(--cyan); border: 1px solid rgba(80,217,205,.35); border-radius: 7px; background: rgba(4,9,8,.72); font-size: 8px; cursor: pointer; }
 .ball-lock-toggle { display: none; }
 .camera-pattern-controls { position: absolute; z-index: 15; left: 8px; right: 8px; top: 8px; display: flex; align-items: center; gap: 8px; min-height: 48px; padding: 7px 8px 7px 11px; border: 1px solid rgba(201,255,61,.35); border-radius: 12px; background: rgba(7,17,15,.94); backdrop-filter: blur(14px); }
 .camera-pattern-controls[hidden] { display: none; }
@@ -371,6 +372,7 @@ input[role="switch"] { appearance: none; width: 39px; height: 22px; padding: 2px
 .my-line-legend em { color: var(--cyan); font-style: normal; font-weight: 700; }
 .metric-card .balance-bar #consistencyBar { background: linear-gradient(90deg, var(--orange), var(--cyan), var(--lime)); }
 
+.lane-confirm-overlay, .lane-confirm-box, .lane-confirm-actions { display: none; }
 @media (min-width: 681px) {
   body { background: #030807; }
   .app-shell { border-left: 1px solid rgba(255,255,255,.05); border-right: 1px solid rgba(255,255,255,.05); }
