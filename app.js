@@ -611,19 +611,37 @@ async function handlePatternImageUpload(event) {
   if (modal) modal.hidden = false;
   try {
     setPatternRenderProgress(5);
-    const processed = await processPatternImage(file);
-    setPatternRenderProgress(40);
+    let processed;
+    try {
+      processed = await processPatternImage(file);
+      setPatternRenderProgress(50);
+    } catch (procError) {
+      // 이미지 처리 실패 시 원본을 그대로 dataURL로 변환해서 폴백
+      console.warn("패턴 이미지 처리 폴백", procError);
+      processed = { overlay: await fileToDataURL(file), source: null, graph: {} };
+      setPatternRenderProgress(50);
+    }
     const fallbackName = file.name.replace(/\.[^.]+$/, "");
     setPatternOverlayImage(processed.overlay, fallbackName, true);
-    setPatternRenderProgress(80);
+    setPatternRenderProgress(90);
     if (modal) modal.hidden = true;
-    showToast("패턴을 레인에 적용했어요. '패턴 맞춤'으로 위치를 조절하세요.");
+    showToast("패턴을 레인에 적용했어요. 우측 '패턴 맞춤'으로 위치를 조절하세요.");
   } catch (error) {
-    console.warn("패턴 처리 실패", error);
+    console.warn("패턴 업로드 실패", error);
     if (modal) modal.hidden = true;
-    showToast("패턴표 이미지를 읽을 수 없어요.");
+    showToast("패턴표 이미지를 읽을 수 없어요. 다른 이미지로 시도해주세요.");
   }
   event.target.value = "";
+}
+
+// 파일을 dataURL로 변환하는 폴백 헬퍼
+function fileToDataURL(file) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(reader.result);
+    reader.onerror = reject;
+    reader.readAsDataURL(file);
+  });
 }
 
 on("#patternImageUpload", "change", handlePatternImageUpload);
@@ -2328,8 +2346,13 @@ function trackBallStandalone(timestamp) {
   const maxY = Math.round(th * .86);
   const minX = Math.round(tw * .08);
   const maxX = Math.round(tw * .92);
-  let best = null;
 
+  // 이전 공 위치 (궤적 연속성 — 근처에서 우선 탐색)
+  const lastTraj = state.trajectory[state.trajectory.length - 1];
+  const lastTracker = lastTraj ? stageToTracker(lastTraj.x, lastTraj.y, tw, th) : null;
+
+  // 1단계: 모든 후보 블록 점수 계산
+  const candidates = [];
   for (let y = minY; y < maxY; y += block) {
     for (let x = minX; x < maxX; x += block) {
       let moving = 0;
@@ -2355,15 +2378,53 @@ function trackBallStandalone(timestamp) {
       const contrast = Math.abs(blockLuma - backgroundLuma);
       const isBallish = dark >= total * .12 || saturation > 45 || contrast > 35;
       if (!isBallish) continue;
-      // 움직임이 명확하거나 색상/대비가 강한 후보
-      const score = moving * 5 + dark * 3 + saturation * .4 + contrast * .5;
-      if (!best || score > best.score) best = { x: x + block / 2, y: y + block / 2, score, moving, r: rSum / total, g: gSum / total, b: bSum / total };
+
+      let score = moving * 5 + dark * 3 + saturation * .4 + contrast * .5;
+      // 궤적 연속성 보너스: 이전 공 위치 근처면 가산
+      if (lastTracker) {
+        const dist = Math.hypot(x + block / 2 - lastTracker.x, y + block / 2 - lastTracker.y);
+        if (dist < 40) score += (40 - dist) * 1.2;
+      }
+      candidates.push({ x: x + block / 2, y: y + block / 2, score, moving, r: rSum / total, g: gSum / total, b: bSum / total });
     }
   }
 
   state.standalonePrevLuma = luma;
 
-  if (!best || best.score < 18 || best.moving < 1) return;
+  if (!candidates.length) return;
+
+  // 2단계: 후보들을 공간적으로 클러스터링 (근처 후보들 합치기 → 노이즈와 구분)
+  // 점수 순 정렬 후 이미 선택된 후보 근처는 같은 클러스터로 흡수
+  candidates.sort((a, b) => b.score - a.score);
+  const clusterRadius = 18;
+  const clusters = [];
+  for (const cand of candidates) {
+    const nearby = clusters.find(c => Math.hypot(cand.x - c.x, cand.y - c.y) < clusterRadius);
+    if (nearby) {
+      nearby.count++;
+      nearby.totalScore += cand.score;
+      // 무게중심 업데이트
+      nearby.x = (nearby.x * (nearby.count - 1) + cand.x) / nearby.count;
+      nearby.y = (nearby.y * (nearby.count - 1) + cand.y) / nearby.count;
+      nearby.moving = Math.max(nearby.moving, cand.moving);
+    } else {
+      clusters.push({ x: cand.x, y: cand.y, count: 1, totalScore: cand.score, moving: cand.moving, r: cand.r, g: cand.g, b: cand.b });
+    }
+  }
+
+  // 3단계: 클러스터 중 최적 선택 (점수 + 크기 가중)
+  // 공은 보통 여러 블록에 걸침 → count가 높을수록 공일 확률 높음
+  let best = null;
+  for (const cluster of clusters) {
+    // 클러스터 점수 = 총점 × 크기 가중 (최대 3블록까지 가산)
+    const sizeWeight = Math.min(1.8, 1 + cluster.count * .2);
+    const finalScore = cluster.totalScore * sizeWeight;
+    if (!best || finalScore > best.finalScore) {
+      best = { ...cluster, finalScore };
+    }
+  }
+
+  if (!best || best.finalScore < 22 || best.moving < 1) return;
 
   const stagePoint = sourceToStage(best.x, best.y, tw, th);
   if (!isInsideLane(stagePoint, stage.clientWidth * .04)) return;
